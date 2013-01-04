@@ -12,7 +12,7 @@ all: $(PROGS)
 install: all
 	sudo install $(PROGS) $(DESTDIR)
 
-adc122s101.ko:
+adc122s101.ko:	adc122s101.c
 ifeq ($(strip $(KERNELDIR)),)
 	$(error "KERNELDIR is undefined!")
 else
