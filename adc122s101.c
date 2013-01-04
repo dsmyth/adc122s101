@@ -39,10 +39,10 @@
 /* number of messages to use */
 #define NUM_MSGS 2
 /* number of reads per transfer */
-#define NUM_READS	128
+#define NUM_READS	16384
 #define SPI_BUFF_SIZE	(NUM_READS * 2)
 #define USER_BUFF_SIZE	128
-#define FIFO_SIZE SPI_BUFF_SIZE * 256
+#define FIFO_SIZE SPI_BUFF_SIZE * 32
 
 /*
 The McSPI controller available speeds are
