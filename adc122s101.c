@@ -35,14 +35,15 @@
 #include <linux/list.h>
 #include <linux/workqueue.h>
 #include <linux/kfifo.h>
+#include <linux/dma-mapping.h>
 
 /* number of messages to use */
 #define NUM_MSGS 2
 /* number of reads per transfer */
-#define NUM_READS	16384
+#define NUM_READS	PAGE_SIZE
 #define SPI_BUFF_SIZE	(NUM_READS * 2)
 #define USER_BUFF_SIZE	128
-#define FIFO_SIZE SPI_BUFF_SIZE * 32
+#define FIFO_SIZE SPI_BUFF_SIZE * NUM_MSGS * 32
 
 /*
 The McSPI controller available speeds are
@@ -76,8 +77,10 @@ struct adc_message {
 	struct completion completion;
 	struct spi_message msg;
 	struct spi_transfer transfer;
-	u8 *tx_buff;
-	u8 *rx_buff;
+	u8 *tx_buf;
+	u8 *rx_buf;
+	dma_addr_t tx_dma;
+	dma_addr_t rx_dma;
 };
 
 struct adc_dev {
@@ -126,14 +129,8 @@ static void adc_workq_handler(struct work_struct *work)
 		if (down_interruptible(&adc_dev.spi_sem))
 			return;
 
-#if 0
-		/* print out the first sample for debugging transfers */
-		printk(KERN_ALERT "%s: %02hhx %02hhx %02hhx %02hhx\n", __func__,
-				adc_msg->rx_buff[0], adc_msg->rx_buff[1],
-				adc_msg->rx_buff[2], adc_msg->rx_buff[3]);
-#endif
 		/* stuff it into the fifo */
-		ret = kfifo_in(&adc_dev.kf, adc_msg->rx_buff, SPI_BUFF_SIZE);
+		ret = kfifo_in(&adc_dev.kf, adc_msg->rx_buf, SPI_BUFF_SIZE);
 
 		up(&adc_dev.spi_sem);
 
@@ -191,17 +188,21 @@ static int adc_init_msg(struct adc_message *adc_msg)
 
 	message = &adc_msg->msg;
 	spi_message_init(message);
+	/* note that tx and rx buffers need to be dma safe to use this */
+	message->is_dma_mapped = 1;
 	message->complete = adc_async_complete;
 	message->context = adc_msg;
 
-	memset(adc_msg->rx_buff, 0, SPI_BUFF_SIZE);
+	memset(adc_msg->rx_buf, 0, SPI_BUFF_SIZE);
 	/* set up transmit buffer to alternate ch0 & ch1 */
 	for (i=0; i < SPI_BUFF_SIZE; i += sizeof(tx_templ)) {
-		memcpy(&adc_msg->tx_buff[i], tx_templ, sizeof(tx_templ));
+		memcpy(&adc_msg->tx_buf[i], tx_templ, sizeof(tx_templ));
 	}
 	memset(&adc_msg->transfer, 0, sizeof(struct spi_transfer));
-	adc_msg->transfer.tx_buf = adc_msg->tx_buff;
-	adc_msg->transfer.rx_buf = adc_msg->rx_buff;
+	adc_msg->transfer.tx_buf = adc_msg->tx_buf;
+	adc_msg->transfer.tx_dma = adc_msg->tx_dma;
+	adc_msg->transfer.rx_buf = adc_msg->rx_buf;
+	adc_msg->transfer.rx_dma = adc_msg->rx_dma;
 	adc_msg->transfer.len = SPI_BUFF_SIZE;
 
 	/* we need the CS raised between each transfer (measurement) */
@@ -335,22 +336,37 @@ static int adc_probe(struct spi_device *spi_device)
 
 	adc_dev.spi_device = spi_device;
 
+	/* allow use of coherent dma buffers */
+	spi_device->dev.coherent_dma_mask = ~0;
+
 	for (i=0; i<NUM_MSGS; i++) {
 		adc_msg = &adc_dev.adc_msg[i];
 
 		init_completion(&adc_msg->completion);
 
-		if (!adc_msg->rx_buff) {
-			adc_msg->rx_buff =
-				kmalloc(SPI_BUFF_SIZE * sizeof(u8), GFP_KERNEL);
-			if (!adc_msg->rx_buff)
+		if (!adc_msg->rx_buf) {
+#if 0
+			adc_msg->rx_buf = kmalloc(SPI_BUFF_SIZE * sizeof(u8), GFP_KERNEL);
+#else
+			adc_msg->rx_buf = dma_alloc_coherent(&spi_device->dev,
+								SPI_BUFF_SIZE,
+								&adc_msg->rx_dma,
+								GFP_DMA);
+#endif
+			if (!adc_msg->rx_buf)
 				status = -ENOMEM;
 		}
 
-		if (!adc_msg->tx_buff) {
-			adc_msg->tx_buff =
-				kmalloc(SPI_BUFF_SIZE * sizeof(u8), GFP_KERNEL);
-			if (!adc_msg->tx_buff)
+		if (!adc_msg->tx_buf) {
+#if 0
+			adc_msg->tx_buf = kmalloc(SPI_BUFF_SIZE * sizeof(u8), GFP_KERNEL);
+#else
+			adc_msg->tx_buf = dma_alloc_coherent(&spi_device->dev,
+								SPI_BUFF_SIZE,
+								&adc_msg->tx_dma,
+								GFP_DMA);
+#endif
+			if (!adc_msg->tx_buf)
 				status = -ENOMEM;
 		}
 		status = adc_init_msg(adc_msg);
@@ -390,11 +406,21 @@ static int adc_remove(struct spi_device *spi_device)
 	for (i=0; i<NUM_MSGS; i++) {
 		adc_msg = &adc_dev.adc_msg[i];
 
-		if (adc_msg->tx_buff)
-			kfree(adc_msg->tx_buff);
+		if (adc_msg->tx_buf)
+#if 0
+			kfree(adc_msg->tx_buf);
+#else
+			dma_free_coherent(&spi_device->dev, SPI_BUFF_SIZE,
+					adc_msg->tx_buf, adc_msg->tx_dma);
+#endif
 
-		if (adc_msg->rx_buff)
-			kfree(adc_msg->rx_buff);
+		if (adc_msg->rx_buf)
+#if 0
+			kfree(adc_msg->rx_buf);
+#else
+			dma_free_coherent(&spi_device->dev, SPI_BUFF_SIZE,
+					adc_msg->rx_buf, adc_msg->rx_dma);
+#endif
 	}
 
 	if (adc_dev.user_buff)
