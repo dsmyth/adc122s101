@@ -2,6 +2,9 @@
 
 PROGS := adc122s101.ko rwadc
 
+MODDIR := $(DESTDIR)/lib/modules
+BINDIR := $(DESTDIR)/usr/bin
+
 ifneq ($(KERNELRELEASE),)
     obj-m :=  adc122s101.o
 else
@@ -10,7 +13,8 @@ else
 all: $(PROGS)
 
 install: all
-	sudo install $(PROGS) $(DESTDIR)
+	install -v -D adc122s101.ko $(MODDIR)
+	install -v -D rwadc $(BINDIR)
 
 adc122s101.ko:	adc122s101.c
 ifeq ($(strip $(KERNELDIR)),)
