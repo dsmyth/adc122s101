@@ -8,7 +8,7 @@ Read data from /dev/adc. Data is 16 bit network order records, ch0 alternating w
 
 i.e. to stream to a udp socket:
 
-cat /dev/adc | nc -u 10.0.1.10 6666
+dd if=/dev/adc bs=65536 | nc -u 10.0.1.10 6666
 
 on the other end, run "nc -u -l 6666 > data.bin" or somesuch.
 

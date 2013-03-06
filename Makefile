@@ -1,6 +1,6 @@
 # Makefile for TI ADC122S101 kernel module
 
-PROGS := adc122s101.ko rwadc
+PROGS := adc122s101.ko
 
 MODDIR := $(DESTDIR)/lib/modules
 
