@@ -240,51 +240,6 @@ static int adc_async(struct adc_message *adc_msg)
 	return status;
 }
 
-static ssize_t adc_write(struct file *filp, const char __user *buff,
-		size_t count, loff_t *f_pos)
-{
-	ssize_t	status;
-	size_t len;
-	int i;
-
-	if(down_interruptible(&adc_dev.fop_sem))
-		return -ERESTARTSYS;
-
-	memset(adc_dev.user_buff, 0, 32);
-	len = count > 8 ? 8 : count;
-
-	if (copy_from_user(adc_dev.user_buff, buff, len)) {
-		status = -EFAULT;
-		goto adc_write_done;
-	}
-
-	status = count;
-
-	/* we accept two commands, "on" or "off" and ignore anything else*/
-	if (!running && !strnicmp(adc_dev.user_buff, "on", 2)) {
-		/* queue up all of the messages */
-		for (i=0; i<NUM_MSGS; i++) {
-			status = adc_async(&adc_dev.adc_msg[i]);
-			if (status) {
-				printk(KERN_ALERT
-					"adc_write(): adc_async() returned %d\n",
-					status);
-				break;
-			}
-		}
-
-		running = 1;
-		status = count;
-	} else if (!strnicmp(adc_dev.user_buff, "off", 3)) {
-		running = 0;
-	}
-
-adc_write_done:
-	up(&adc_dev.fop_sem);
-
-	return status;
-}
-
 static ssize_t adc_read(struct file *filp, char __user *buff, size_t count,
 			loff_t *offp)
 {
@@ -324,6 +279,9 @@ static ssize_t adc_read(struct file *filp, char __user *buff, size_t count,
 static int adc_open(struct inode *inode, struct file *filp)
 {
 	int status = 0;
+	int i;
+
+	printk(KERN_INFO "adc_open()\n"); 
 
 	if (down_interruptible(&adc_dev.fop_sem))
 		return -ERESTARTSYS;
@@ -334,6 +292,43 @@ static int adc_open(struct inode *inode, struct file *filp)
 			status = -ENOMEM;
 	}
 
+	/* get things going */
+	if (!running) {
+		/* queue up all of the messages */
+		for (i=0; i<NUM_MSGS; i++) {
+			status = adc_async(&adc_dev.adc_msg[i]);
+			if (status) {
+				printk(KERN_ALERT
+					"adc_write(): adc_async() returned %d\n",
+					status);
+				break;
+			}
+		}
+
+		running = 1;
+	}
+		
+	up(&adc_dev.fop_sem);
+
+	return status;
+}
+
+static int adc_release(struct inode *inode, struct file *filp)
+{
+	int status = 0;
+
+	printk(KERN_INFO "adc_release()\n"); 
+	
+	if (down_interruptible(&adc_dev.fop_sem))
+		return -ERESTARTSYS;
+
+	if (adc_dev.user_buff) {
+		kfree(adc_dev.user_buff);
+		adc_dev.user_buff = NULL;
+	}
+
+	running = 0;
+	
 	up(&adc_dev.fop_sem);
 
 	return status;
@@ -546,8 +541,8 @@ static int __init adc_init_spi(void)
 static const struct file_operations adc_fops = {
 	.owner =	THIS_MODULE,
 	.read = 	adc_read,
-	.write =	adc_write,
 	.open =		adc_open,
+	.release =    adc_release,
 };
 
 static int __init adc_init_cdev(void)
