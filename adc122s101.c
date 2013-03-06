@@ -290,6 +290,7 @@ static ssize_t adc_read(struct file *filp, char __user *buff, size_t count,
 {
 	size_t len;
 	ssize_t status = 0;
+	int i, w;
 
 	if (!buff)
 		return -EFAULT;
@@ -297,6 +298,16 @@ static ssize_t adc_read(struct file *filp, char __user *buff, size_t count,
 	if (down_interruptible(&adc_dev.fop_sem))
 		return -ERESTARTSYS;
 
+	/* wait until we have a full block to transfer */
+	for (i = 0; (len = kfifo_len(&adc_dev.kf)) < count; i++) {
+		/* how many milliseconds until the buffer is full */
+		/* 8 bytes per byte clocked in at bus speed in Hertz */ 
+		w =(count-len) * 8000 / BASE_BUS_SPEED;
+		printk(KERN_DEBUG "adc_read(): iter %d, len %u < count %u, sleeping %d ms\n", 
+			i, len, count, w);
+		msleep(w);
+	}
+	
 	if (kfifo_to_user(&adc_dev.kf, buff, count, &len)) {
 		printk(KERN_ALERT "adc_read(): kfifo_to_user() failed\n");
 		status = -EFAULT;
