@@ -258,7 +258,7 @@ static ssize_t adc_read(struct file *filp, char __user *buff, size_t count,
 		/* how many milliseconds until the buffer is full */
 		/* 8 bytes per byte clocked in at bus speed in Hertz */ 
 		w =(count-len) * 8000 / BASE_BUS_SPEED;
-#if _DEBUG
+#ifdef _DEBUG
 		printk(KERN_DEBUG "adc_read(): iter %d, len %u < count %u, sleeping %d ms\n", 
 			i, len, count, w);
 #endif
@@ -283,7 +283,7 @@ static int adc_open(struct inode *inode, struct file *filp)
 	int status = 0;
 	int i;
 
-#if _DEBUG
+#ifdef _DEBUG
 	printk(KERN_INFO "adc_open()\n"); 
 #endif
 	if (down_interruptible(&adc_dev.fop_sem))
@@ -320,7 +320,7 @@ static int adc_release(struct inode *inode, struct file *filp)
 {
 	int status = 0;
 
-#if _DEBUG
+#ifdef _DEBUG
 	printk(KERN_INFO "adc_release()\n"); 
 #endif
 	
