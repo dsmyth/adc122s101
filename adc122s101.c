@@ -62,9 +62,7 @@ So 12 MHz is the best we can do with ADC122S101 maxing out at 16 MHz
 #define SPI_BUS 2
 #define SPI_BUS_CS1 0
 
-//#define BASE_BUS_SPEED 12000000 // 375000 samples/s
-#define BASE_BUS_SPEED 3000000 // 93750 samples/s
-//#define BASE_BUS_SPEED 1500000 // 46875 samples/s
+#define BASE_BUS_SPEED 6000000 
 
 static int bus_speed = BASE_BUS_SPEED;
 module_param(bus_speed, int, S_IRUGO);
