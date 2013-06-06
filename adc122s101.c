@@ -41,9 +41,12 @@
 #define NUM_MSGS 2
 /* number of reads per transfer */
 #define NUM_READS	PAGE_SIZE
-#define SPI_BUFF_SIZE	(NUM_READS * 2)
+/* number of 4 byte samples to pad out the buffers to account for inter-buffer gap */
+#define SPI_GAP_PADDING 7
+#define FIFO_BUFF_SIZE  (NUM_READS * 2)
+#define SPI_BUFF_SIZE	(FIFO_BUFF_SIZE - SPI_GAP_PADDING * sizeof(uint32_t))
 #define USER_BUFF_SIZE	128
-#define FIFO_SIZE SPI_BUFF_SIZE * NUM_MSGS * 32
+#define FIFO_SIZE SPI_BUFF_SIZE * NUM_MSGS * 64
 
 /*
 The McSPI controller available speeds are
@@ -108,8 +111,9 @@ static void adc_workq_handler(struct work_struct *work)
 {
 	struct adc_message *adc_msg;
 	struct adc_message *next;
-	int ret;
+	int i, ret;
 	static int alerted=0;
+	uint32_t *pSample, *pBuffer;
 
 	/*
 	  get everything out of the done_list and into the work_list
@@ -129,12 +133,23 @@ static void adc_workq_handler(struct work_struct *work)
 		if (down_interruptible(&adc_dev.spi_sem))
 			return;
 
+                /* 
+                   HACK! Pad out SPI buffer with last sample to compensate for 
+                   missed samples between buffers -- currently 47.2 us or 7 samples
+                */
+                pSample = (uint32_t *)&adc_msg->rx_buf[SPI_BUFF_SIZE - sizeof(uint32_t)];
+                pBuffer = (uint32_t *)&adc_msg->rx_buf[SPI_BUFF_SIZE];
+                
+                for (i=SPI_BUFF_SIZE/sizeof(uint32_t); i < FIFO_BUFF_SIZE/sizeof(uint32_t); ++i) {
+                        *pBuffer++ = *pSample;
+                }
+                
 		/* stuff it into the fifo */
-		ret = kfifo_in(&adc_dev.kf, adc_msg->rx_buf, SPI_BUFF_SIZE);
+		ret = kfifo_in(&adc_dev.kf, adc_msg->rx_buf, FIFO_BUFF_SIZE);
 
 		up(&adc_dev.spi_sem);
 
-		if (ret != SPI_BUFF_SIZE) {
+		if (ret != FIFO_BUFF_SIZE) {
 			if (!alerted) {
 				printk(KERN_ALERT "%s: kfifo_in returned %d\n", __func__, ret);
 				alerted = 1;
@@ -357,10 +372,10 @@ static int adc_probe(struct spi_device *spi_device)
 
 		if (!adc_msg->rx_buf) {
 #if 0
-			adc_msg->rx_buf = kmalloc(SPI_BUFF_SIZE * sizeof(u8), GFP_KERNEL);
+			adc_msg->rx_buf = kmalloc(FIFO_BUFF_SIZE * sizeof(u8), GFP_KERNEL);
 #else
 			adc_msg->rx_buf = dma_alloc_coherent(&spi_device->dev,
-								SPI_BUFF_SIZE,
+								FIFO_BUFF_SIZE,
 								&adc_msg->rx_dma,
 								GFP_DMA);
 #endif
@@ -370,10 +385,10 @@ static int adc_probe(struct spi_device *spi_device)
 
 		if (!adc_msg->tx_buf) {
 #if 0
-			adc_msg->tx_buf = kmalloc(SPI_BUFF_SIZE * sizeof(u8), GFP_KERNEL);
+			adc_msg->tx_buf = kmalloc(FIFO_BUFF_SIZE * sizeof(u8), GFP_KERNEL);
 #else
 			adc_msg->tx_buf = dma_alloc_coherent(&spi_device->dev,
-								SPI_BUFF_SIZE,
+								FIFO_BUFF_SIZE,
 								&adc_msg->tx_dma,
 								GFP_DMA);
 #endif
@@ -421,7 +436,7 @@ static int adc_remove(struct spi_device *spi_device)
 #if 0
 			kfree(adc_msg->tx_buf);
 #else
-			dma_free_coherent(&spi_device->dev, SPI_BUFF_SIZE,
+			dma_free_coherent(&spi_device->dev, FIFO_BUFF_SIZE,
 					adc_msg->tx_buf, adc_msg->tx_dma);
 #endif
 
@@ -429,7 +444,7 @@ static int adc_remove(struct spi_device *spi_device)
 #if 0
 			kfree(adc_msg->rx_buf);
 #else
-			dma_free_coherent(&spi_device->dev, SPI_BUFF_SIZE,
+			dma_free_coherent(&spi_device->dev, FIFO_BUFF_SIZE,
 					adc_msg->rx_buf, adc_msg->rx_dma);
 #endif
 	}
