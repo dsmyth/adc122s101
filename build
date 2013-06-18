@@ -1,5 +1,5 @@
 BB=$HOME/Work/Beaglebone-Buildroot
-KERNEL=linux-master
+KERNEL=linux-3.8
 export KERNELDIR=${BB}/output/build/${KERNEL}
 
 export PATH=${PATH}:${BB}/output/host/opt/ext-toolchain/bin:${BB}/output/host/usr/bin

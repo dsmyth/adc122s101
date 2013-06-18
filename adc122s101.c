@@ -42,7 +42,7 @@
 /* number of reads per transfer */
 #define NUM_READS	PAGE_SIZE
 /* number of 4 byte samples to pad out the buffers to account for inter-buffer gap */
-#define SPI_GAP_PADDING 7
+#define SPI_GAP_PADDING 8
 #define FIFO_BUFF_SIZE  (NUM_READS * 2)
 #define SPI_BUFF_SIZE	(FIFO_BUFF_SIZE - SPI_GAP_PADDING * sizeof(uint32_t))
 #define USER_BUFF_SIZE	128
@@ -135,7 +135,7 @@ static void adc_workq_handler(struct work_struct *work)
 
                 /* 
                    HACK! Pad out SPI buffer with last sample to compensate for 
-                   missed samples between buffers -- currently 47.2 us or 7 samples
+                   missed samples between buffers -- currently 47.2 us or 8 samples
                 */
                 pSample = (uint32_t *)&adc_msg->rx_buf[SPI_BUFF_SIZE - sizeof(uint32_t)];
                 pBuffer = (uint32_t *)&adc_msg->rx_buf[SPI_BUFF_SIZE];
@@ -190,7 +190,7 @@ static int adc_init_msg(struct adc_message *adc_msg)
 	struct spi_device *spi_device;
 	int i;
 	/* sample ch0 then ch1 alternately in buffer */
-	u8 tx_templ[4] = {0x00, 0x00, 0x08, 0x00};
+	u8 tx_templ[4] = {0x00, 0x00, 0x00, 0x08};
 
 	spi_device = adc_dev.spi_device;
 
@@ -219,6 +219,7 @@ static int adc_init_msg(struct adc_message *adc_msg)
 	adc_msg->transfer.rx_buf = adc_msg->rx_buf;
 	adc_msg->transfer.rx_dma = adc_msg->rx_dma;
 	adc_msg->transfer.len = SPI_BUFF_SIZE;
+        adc_msg->transfer.cs_change = false;
 
 	/* we need the CS raised between each transfer (measurement) */
 	//adc_msg->transfer.cs_change = 1;
@@ -507,7 +508,7 @@ static int __init add_adc_device_to_bus(void)
 	} else {
 		spi_device->max_speed_hz = bus_speed;
 		spi_device->mode = SPI_MODE_3;
-		spi_device->bits_per_word = 8;
+		spi_device->bits_per_word = 16;
 		spi_device->irq = -1;
 		spi_device->controller_state = NULL;
 		spi_device->controller_data = NULL;
@@ -534,7 +535,7 @@ static struct spi_driver adc_spi = {
 		.owner = THIS_MODULE,
 	},
 	.probe = adc_probe,
-	.remove = __devexit_p(adc_remove),
+	.remove = adc_remove,
 };
 
 static int __init adc_init_spi(void)
