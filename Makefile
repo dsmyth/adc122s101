@@ -2,8 +2,6 @@
 
 PROGS := adc122s101.ko
 
-MODDIR := $(DESTDIR)/lib/modules
-
 ifneq ($(KERNELRELEASE),)
     obj-m :=  adc122s101.o
 else
@@ -12,13 +10,17 @@ else
 all: $(PROGS)
 
 install: all
-	install -v -D adc122s101.ko $(MODDIR)
+ifeq ($(strip $(KERNELDIR)),)
+	$(error "KERNELDIR is undefined!")
+else
+	$(MAKE) -C $(KERNELDIR) M=$(PWD) INSTALL_MOD_PATH=$(DESTDIR) modules_install
+endif
 
 adc122s101.ko:	adc122s101.c
 ifeq ($(strip $(KERNELDIR)),)
 	$(error "KERNELDIR is undefined!")
 else
-	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules 
+	$(MAKE) -C $(KERNELDIR) M=$(PWD) INSTALL_MOD_PATH=$(DESTDIR) modules 
 endif
 
 clean:

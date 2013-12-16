@@ -36,17 +36,15 @@
 #include <linux/workqueue.h>
 #include <linux/kfifo.h>
 #include <linux/dma-mapping.h>
+#include <linux/time.h>
 
 /* number of messages to use */
 #define NUM_MSGS 2
 /* number of reads per transfer */
 #define NUM_READS	PAGE_SIZE
-/* number of 4 byte samples to pad out the buffers to account for inter-buffer gap */
-#define SPI_GAP_PADDING 8
-#define FIFO_BUFF_SIZE  (NUM_READS * 2)
-#define SPI_BUFF_SIZE	(FIFO_BUFF_SIZE - SPI_GAP_PADDING * sizeof(uint32_t))
+#define FIFO_BUFF_SIZE  (NUM_READS * 16)
 #define USER_BUFF_SIZE	128
-#define FIFO_SIZE SPI_BUFF_SIZE * NUM_MSGS * 64
+#define FIFO_SIZE FIFO_BUFF_SIZE * NUM_MSGS * 64
 
 /*
 The McSPI controller available speeds are
@@ -76,6 +74,8 @@ const char this_driver_name[] = "adc";
 static int running = 0;
 
 struct adc_message {
+	/* tv *must* be the first entry in the struct so the spi driver can use it */
+	struct timespec tv;
 	struct list_head list;
 	struct completion completion;
 	struct spi_message msg;
@@ -96,6 +96,14 @@ struct adc_dev {
 	struct adc_message adc_msg[NUM_MSGS];
 	char *user_buff;
 	struct kfifo kf;
+	struct workqueue_struct *wq;
+};
+
+struct adc_marker {
+	uint32_t pre;
+	uint32_t sec;
+	uint32_t nsec;
+	uint32_t post;
 };
 
 static struct adc_dev adc_dev;
@@ -111,9 +119,9 @@ static void adc_workq_handler(struct work_struct *work)
 {
 	struct adc_message *adc_msg;
 	struct adc_message *next;
-	int i, ret;
+	struct adc_marker marker;
+	int ret;
 	static int alerted=0;
-	uint32_t *pSample, *pBuffer;
 
 	/*
 	  get everything out of the done_list and into the work_list
@@ -133,20 +141,20 @@ static void adc_workq_handler(struct work_struct *work)
 		if (down_interruptible(&adc_dev.spi_sem))
 			return;
 
-                /* 
-                   HACK! Pad out SPI buffer with last sample to compensate for 
-                   missed samples between buffers -- currently 47.2 us or 8 samples
-                */
-                pSample = (uint32_t *)&adc_msg->rx_buf[SPI_BUFF_SIZE - sizeof(uint32_t)];
-                pBuffer = (uint32_t *)&adc_msg->rx_buf[SPI_BUFF_SIZE];
-                
-                for (i=SPI_BUFF_SIZE/sizeof(uint32_t); i < FIFO_BUFF_SIZE/sizeof(uint32_t); ++i) {
-                        *pBuffer++ = *pSample;
-                }
-                
-		/* stuff it into the fifo */
-		ret = kfifo_in(&adc_dev.kf, adc_msg->rx_buf, FIFO_BUFF_SIZE);
+		/* add the time stamp marker */
+		marker.pre = UINT_MAX;
+		marker.sec = adc_msg->tv.tv_sec | 0x80000000;
+		marker.nsec = adc_msg->tv.tv_nsec | 0x80000000;
+		marker.post = UINT_MAX-1;   
 
+		/* stuff it into the fifo */
+		ret = kfifo_in(&adc_dev.kf, &marker, sizeof(marker));
+		
+		/* if it was taken, stuff in the received message buffer */
+		if (ret == sizeof(marker)) {
+			ret = kfifo_in(&adc_dev.kf, adc_msg->rx_buf, FIFO_BUFF_SIZE);
+		}
+		
 		up(&adc_dev.spi_sem);
 
 		if (ret != FIFO_BUFF_SIZE) {
@@ -161,7 +169,8 @@ static void adc_workq_handler(struct work_struct *work)
 			}
 		}
 
-		/* resubmit the message */
+
+		/* resubmit the message if the driver is still open */
 		if (running)
 			if (adc_async(adc_msg))
 				running = 0;
@@ -178,8 +187,7 @@ static void adc_async_complete(void *arg)
 	list_add_tail(&adc_msg->list, &done_list);
 	mutex_unlock(&list_lock);
 
-	schedule_work(&spi_work);
-
+	queue_work(adc_dev.wq, &spi_work);
 	complete(&adc_msg->completion);
 }
 
@@ -207,10 +215,11 @@ static int adc_init_msg(struct adc_message *adc_msg)
 	message->is_dma_mapped = 1;
 	message->complete = adc_async_complete;
 	message->context = adc_msg;
+	message->state = &adc_msg->tv;	
 
-	memset(adc_msg->rx_buf, 0, SPI_BUFF_SIZE);
+	memset(adc_msg->rx_buf, 0, FIFO_BUFF_SIZE);
 	/* set up transmit buffer to alternate ch0 & ch1 */
-	for (i=0; i < SPI_BUFF_SIZE; i += sizeof(tx_templ)) {
+	for (i=0; i < FIFO_BUFF_SIZE; i += sizeof(tx_templ)) {
 		memcpy(&adc_msg->tx_buf[i], tx_templ, sizeof(tx_templ));
 	}
 	memset(&adc_msg->transfer, 0, sizeof(struct spi_transfer));
@@ -218,8 +227,8 @@ static int adc_init_msg(struct adc_message *adc_msg)
 	adc_msg->transfer.tx_dma = adc_msg->tx_dma;
 	adc_msg->transfer.rx_buf = adc_msg->rx_buf;
 	adc_msg->transfer.rx_dma = adc_msg->rx_dma;
-	adc_msg->transfer.len = SPI_BUFF_SIZE;
-        adc_msg->transfer.cs_change = false;
+	adc_msg->transfer.len = FIFO_BUFF_SIZE;
+	adc_msg->transfer.cs_change = 0;
 
 	/* we need the CS raised between each transfer (measurement) */
 	//adc_msg->transfer.cs_change = 1;
@@ -246,6 +255,9 @@ static int adc_async(struct adc_message *adc_msg)
 	if (down_interruptible(&adc_dev.spi_sem))
 		return -EFAULT;
 
+	/* restore our state (spi_finalize_current_message clears it) */
+	adc_msg->msg.state = &adc_msg->tv;
+	
 	/* trigger the transfer */
 	status = spi_async(adc_dev.spi_device, &adc_msg->msg);
 
@@ -365,6 +377,14 @@ static int adc_probe(struct spi_device *spi_device)
 
 	/* allow use of coherent dma buffers */
 	spi_device->dev.coherent_dma_mask = ~0;
+	
+	/* create our own high priority work queue */
+	adc_dev.wq = alloc_workqueue("adc_worker", WQ_UNBOUND | WQ_HIGHPRI, 1);
+	
+	if (!adc_dev.wq) {
+		printk(KERN_ERR "adc_probe(): error create_workqueue\n");
+		status = -ENOMEM;
+	}
 
 	for (i=0; i<NUM_MSGS; i++) {
 		adc_msg = &adc_dev.adc_msg[i];
@@ -399,19 +419,19 @@ static int adc_probe(struct spi_device *spi_device)
 		status = adc_init_msg(adc_msg);
 		if (status) {
 			printk(KERN_ALERT
-				"adc_write(): adc_init_msg() returned %d\n",
+				"adc_probe(): adc_init_msg() returned %d\n",
 				status);
 		return -EFAULT;
 		}
 	}
 
 	if (kfifo_alloc(&adc_dev.kf, FIFO_SIZE, GFP_KERNEL)) {
-		printk(KERN_ERR "error kfifo_alloc\n");
+		printk(KERN_ERR "adc_probe(): error kfifo_alloc\n");
 		status = -ENOMEM;
 	}
 
 	if (!status)
-		printk(KERN_ALERT "SPI[%d] max_speed_hz %d Hz  bus_speed %d Hz\n",
+		printk(KERN_ALERT "adc_probe(): SPI[%d] max_speed_hz %d Hz  bus_speed %d Hz\n",
 			spi_device->chip_select,
 			spi_device->max_speed_hz,
 			bus_speed);
@@ -430,6 +450,9 @@ static int adc_remove(struct spi_device *spi_device)
 		return -EBUSY;
 
 	adc_dev.spi_device = NULL;
+	destroy_workqueue(adc_dev.wq);
+	adc_dev.wq = NULL;
+	
 	for (i=0; i<NUM_MSGS; i++) {
 		adc_msg = &adc_dev.adc_msg[i];
 
